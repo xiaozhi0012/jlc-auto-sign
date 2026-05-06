@@ -13,6 +13,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from serverchan_sdk import sc_send
 
 # 全局变量用于收集总结日志
@@ -202,7 +203,7 @@ class JLCClient:
             if response.status_code == 200:
                 return response.json()
             else:
-                log(f"账号 {self.account_index} - ? 请求失败，状态码: {response.status_code}")
+                log(f"账号 {self.account_index} - ? 请求失败，状态���: {response.status_code}")
                 return None
         except Exception as e:
             log(f"账号 {self.account_index} - ? 请求异常 ({url}): {e}")
@@ -536,7 +537,17 @@ def ensure_login_page(driver, account_index):
             driver.get("https://oshwhub.com/sign_in")
             log(f"账号 {account_index} - 已打开 JLC 签到页")
             
-            WebDriverWait(driver, 10).until(lambda d: "passport.jlc.com/login" in d.current_url)
+            try:
+                WebDriverWait(driver, 10).until(lambda d: "passport.jlc.com/login" in d.current_url)
+            except TimeoutException:
+                log(f"账号 {account_index} - ? 等待登录页超时")
+                restarts += 1
+                if restarts < max_restarts:
+                    time.sleep(2)
+                    continue
+                else:
+                    return False
+            
             current_url = driver.current_url
 
             # 检查是否在登录页面
@@ -754,53 +765,66 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             result['oshwhub_status'] = '密码错误'
             return result
 
-        # 处理滑块验证
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".btn_slide")))
+        # 处理滑块验证 - 修复：使用try-except处理可能不存在的滑块
         try:
-            slider = wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, ".btn_slide"))
+            slider_present = WebDriverWait(driver, 3).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".btn_slide"))
             )
+            log(f"账号 {account_index} - 检测到滑块验证")
             
-            track = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".nc_scale"))
-            )
-            
-            track_width = track.size['width']
-            slider_width = slider.size['width']
-            move_distance = track_width - slider_width - 10
-            
-            log(f"账号 {account_index} - 检测到滑块验证码，滑动距离: {move_distance}px")
-            
-            actions = ActionChains(driver)
-            actions.click_and_hold(slider).perform()
-            time.sleep(0.5)
-            
-            quick_distance = int(move_distance * random.uniform(0.6, 0.8))
-            slow_distance = move_distance - quick_distance
-            
-            y_offset1 = random.randint(-2, 2)
-            actions.move_by_offset(quick_distance, y_offset1).perform()
-            time.sleep(random.uniform(0.1, 0.3))
-            
-            y_offset2 = random.randint(-2, 2)
-            actions.move_by_offset(slow_distance, y_offset2).perform()
-            time.sleep(random.uniform(0.05, 0.15))
-            
-            actions.release().perform()
-            log(f"账号 {account_index} - 滑块拖动完成")
-            
-            # 滑块验证后立即检查密码错误提示
-            time.sleep(1)  # 给错误提示一点时间显示
-            if check_password_error(driver, account_index):
-                result['password_error'] = True
-                result['oshwhub_status'] = '密码错误'
-                return result
+            try:
+                slider = wait.until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".btn_slide"))
+                )
                 
-            WebDriverWait(driver, 10).until(lambda d: "oshwhub.com" in d.current_url and "passport.jlc.com" not in d.current_url)
-            
-        except Exception as e:
-            log(f"账号 {account_index} - 滑块验证处理: {e}")
-            # 滑块验证失败后检查密码错误
+                track = wait.until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".nc_scale"))
+                )
+                
+                track_width = track.size['width']
+                slider_width = slider.size['width']
+                move_distance = track_width - slider_width - 10
+                
+                log(f"账号 {account_index} - 滑块验证码，滑动距离: {move_distance}px")
+                
+                actions = ActionChains(driver)
+                actions.click_and_hold(slider).perform()
+                time.sleep(0.5)
+                
+                quick_distance = int(move_distance * random.uniform(0.6, 0.8))
+                slow_distance = move_distance - quick_distance
+                
+                y_offset1 = random.randint(-2, 2)
+                actions.move_by_offset(quick_distance, y_offset1).perform()
+                time.sleep(random.uniform(0.1, 0.3))
+                
+                y_offset2 = random.randint(-2, 2)
+                actions.move_by_offset(slow_distance, y_offset2).perform()
+                time.sleep(random.uniform(0.05, 0.15))
+                
+                actions.release().perform()
+                log(f"账号 {account_index} - 滑块拖动完成")
+                
+                # 滑块验证后立即检查密码错误提示
+                time.sleep(1)
+                if check_password_error(driver, account_index):
+                    result['password_error'] = True
+                    result['oshwhub_status'] = '密码错误'
+                    return result
+                    
+                WebDriverWait(driver, 10).until(lambda d: "oshwhub.com" in d.current_url and "passport.jlc.com" not in d.current_url)
+                
+            except Exception as e:
+                log(f"账号 {account_index} - 滑块验证处理异常: {e}")
+                time.sleep(1)
+                if check_password_error(driver, account_index):
+                    result['password_error'] = True
+                    result['oshwhub_status'] = '密码错误'
+                    return result
+                    
+        except TimeoutException:
+            # 滑块不存在，继续（可能已通过验证或不需要验证）
+            log(f"账号 {account_index} - 未检测到滑块验证，继续...")
             time.sleep(1)
             if check_password_error(driver, account_index):
                 result['password_error'] = True
@@ -956,10 +980,13 @@ def sign_in_account(username, password, account_index, total_accounts, retry_cou
             result['jindou_status'] = 'Token提取失败'
 
     except Exception as e:
-        log(f"账号 {account_index} - ? 程序执行错误: {e}")
+        log(f"账号 {account_index} - ? 程序执行错误: {str(e)}")
         result['oshwhub_status'] = '执行异常'
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except:
+            pass
         log(f"账号 {account_index} - 浏览器已关闭")
     
     return result
@@ -1423,7 +1450,7 @@ def main():
     if not failed_oshwhub and not failed_jindou and not password_error_accounts:
         log("  ?? 所有账号全部签到成功!")
     elif password_error_accounts and not failed_oshwhub and not failed_jindou:
-        log("  ?除了密码错误账号，其他账号全部签到成功!")
+        log("  ?除了密���错误账号，其他账号全部签到成功!")
     
     log("=" * 70)
     
